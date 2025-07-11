@@ -13,7 +13,7 @@ class Settings:
     """Application settings"""
     
     # Database settings
-    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb+srv://gksvaibav99:vaibhu2027@cluster0.rc32pqz.mongodb.net/mydatabase?retryWrites=true&w=majority&tls=true")
+    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb+srv://rajarevs96:m6a8Aqj6cM7lodZg@cluster0.fp29kyt.mongodb.net/")
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "maverick_dashboard")
     
     # EmailJS settings
