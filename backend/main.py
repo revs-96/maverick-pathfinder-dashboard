@@ -306,7 +306,7 @@ async def set_password(request: SetPasswordRequest):
         
         # In a real app, you'd hash the password here.
         # For now, storing plaintext to match existing logic.
-        new_password = request.new_password
+        new_password = hash_password(request.new_password)
 
         result = await user_collection.update_one(
             {"email": request.email},
@@ -346,9 +346,10 @@ async def change_password(request: ChangePasswordRequest):
             raise HTTPException(status_code=404, detail="User not found")
 
         # Directly update to new password (no old password check)
+        hashed_password = hash_password(request.new_password)
         result = await user_collection.update_one(
             {"_id": user["_id"]},
-            {"$set": {"password": request.new_password, "password_is_temporary": False}}
+            {"$set": {"password": hashed_password, "password_is_temporary": False}}
         )
         
         if result.modified_count == 0:
