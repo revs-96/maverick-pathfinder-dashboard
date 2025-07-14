@@ -23,7 +23,7 @@ from db import get_database, test_db_connection, ensure_indexes
 from models import (
     Trainee, Admin, DashboardStats, WeeklyProgress, 
     PhaseDistribution, Training, Task, LoginRequest, SetPasswordRequest,
-    ChangePasswordRequest, Batch, Activity
+    ChangePasswordRequest, Batch, Activity, Mentor
 )
 from ai_agent import create_trainee_profile, test_ollama_connection, generate_training_recommendations, extract_text_from_pdf, extract_text_from_docx, fast_extract_resume_fields
 from email_service import send_welcome_email_smtp, test_smtp_connection
@@ -77,6 +77,11 @@ def collapse_single_letters(line):
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
+
+async def create_mentor_emp_id():
+    # Generate a unique mentor empId like MENT-0001
+    count = await db.mentors.count_documents({})
+    return f"MENT-{count+1:04d}"
 
 @app.on_event("startup")
 async def startup_event():
@@ -181,9 +186,13 @@ async def health_check():
 
 @app.post("/auth/login")
 async def login(login_request: LoginRequest):
-    """Handle user login with AI-generated profile creation for new trainees"""
+    """Handle user login with AI-generated profile creation for new trainees and mentors"""
     try:
-        user_collection = db[f"{login_request.role}s"]
+        # Determine collection based on role
+        if login_request.role == "mentor":
+            user_collection = db["mentors"]
+        else:
+            user_collection = db[f"{login_request.role}s"]
         # Support login by empId or email
         user = None
         if hasattr(login_request, 'empId') and login_request.empId:
@@ -194,29 +203,52 @@ async def login(login_request: LoginRequest):
         if user:
             # User exists - this is a login attempt
             if not login_request.password:
-                # User exists but no password provided - this is invalid
                 raise HTTPException(status_code=400, detail="User already exists. Please login with your password.")
-            # Existing user login with password
-            if user.get("password") == login_request.password:
-                # Update last_login to now
+            # Use pwd_context.verify for all roles
+            if pwd_context.verify(login_request.password, user.get("password", "")):
                 await user_collection.update_one({"_id": user["_id"]}, {"$set": {"last_login": datetime.now().isoformat()}})
-                # Return user with updated last_login
                 user["last_login"] = datetime.now().isoformat()
                 return JSONResponse(content=serialize_doc(user))
             else:
                 raise HTTPException(status_code=401, detail="Invalid credentials")
         else:
-            # Only allow registration if both name and email are provided
-            if login_request.role == 'trainee' and login_request.name and login_request.email:
+            # Registration logic for new mentor
+            if login_request.role == 'mentor' and login_request.name and login_request.email:
+                try:
+                    print(f"Creating new mentor profile for: {login_request.email} - {login_request.name}")
+                    emp_id = await create_mentor_emp_id()
+                    hashed_pw = pwd_context.hash(login_request.password or "mentor123")
+                    new_mentor = Mentor(
+                        name=login_request.name,
+                        email=login_request.email,
+                        password=hashed_pw,
+                        empId=emp_id,
+                        specialization="General",
+                        created_at=datetime.now().isoformat(),
+                        last_login=datetime.now().isoformat()
+                    )
+                    result = await db.mentors.insert_one(new_mentor.dict())
+                    if result.inserted_id:
+                        print(f"✅ Mentor profile created successfully: {emp_id}")
+                        return JSONResponse(content={
+                            "status": "account_created",
+                            "user": serialize_doc(new_mentor.dict()),
+                            "message": "Mentor account created successfully"
+                        })
+                    else:
+                        raise HTTPException(status_code=500, detail="Failed to create mentor account.")
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Error creating mentor: {str(e)}")
+            # Registration logic for new trainee (existing logic)
+            elif login_request.role == 'trainee' and login_request.name and login_request.email:
                 try:
                     print(f"Creating new trainee profile for: {login_request.email} - {login_request.name}")
-                    # Generate AI profile with credentials (but use provided name)
                     profile = await create_trainee_profile(login_request.email)
-                    # Create trainee document using provided name
+                    hashed_pw = pwd_context.hash(profile["password"])
                     new_trainee = Trainee(
-                        name=login_request.name,  # Use provided name instead of AI-generated
+                        name=login_request.name,
                         email=login_request.email,
-                        password=profile["password"],
+                        password=hashed_pw,
                         empId=profile["empId"],
                         phase=1,
                         progress=0,
@@ -226,7 +258,6 @@ async def login(login_request: LoginRequest):
                         created_at=datetime.now().isoformat(),
                         last_login=datetime.now().isoformat()
                     )
-                    # Store in database
                     result = await db.trainees.insert_one(new_trainee.model_dump())
                     if result.inserted_id:
                         print(f"✅ Trainee profile created successfully: {profile['empId']}")
@@ -245,6 +276,26 @@ async def login(login_request: LoginRequest):
                 raise HTTPException(status_code=404, detail="User not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
+
+# Helper to create mentor empId
+async def create_mentor_emp_id():
+    try:
+        pipeline = [
+            {"$match": {"empId": {"$regex": "^MEN-\\d{4}$"}}},
+            {"$addFields": {"idNumber": {"$toInt": {"$substr": ["$empId", 4, 4]}}}},
+            {"$sort": {"idNumber": -1}},
+            {"$limit": 1}
+        ]
+        result = await db.mentors.aggregate(pipeline).to_list(1)
+        if result:
+            last_id = result[0]["idNumber"]
+            next_id = last_id + 1
+        else:
+            next_id = 1
+        return f"MEN-{next_id:04d}"
+    except Exception as e:
+        print(f"Error generating mentor ID: {e}")
+        return f"MEN-{random.randint(1000, 9999)}"
 
 @app.post("/api/user/set-password")
 async def set_password(request: SetPasswordRequest):
@@ -326,6 +377,11 @@ async def get_admins():
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching admins: {str(e)}")
+
+@app.get("/mentors")
+async def list_mentors():
+    mentors = await db.mentors.find().to_list(length=100)
+    return [serialize_doc(m) for m in mentors]
 
 # Basic CRUD for trainees
 @app.get("/trainees")
@@ -1145,6 +1201,72 @@ async def create_account_for_trainee(payload: dict = Body(...)):
         }
     else:
         raise HTTPException(status_code=500, detail="Failed to create trainee account.")
+
+@app.post("/onboarding/create-mentor-account")
+async def create_mentor_account(payload: dict = Body(...)):
+    """Admin creates a mentor account, credentials are emailed and stored in MongoDB."""
+    name = payload.get("name")
+    email = payload.get("email")
+    specialization = payload.get("specialization", "General")
+    if not name or not email:
+        raise HTTPException(status_code=400, detail="Missing name or email.")
+    # Check if mentor already exists
+    existing = await db.mentors.find_one({"email": email})
+    if existing:
+        return {"status": "already_created", "empId": existing.get("empId"), "message": "Mentor already exists for this email."}
+    # Generate empId and temp password
+    emp_id = await create_mentor_emp_id()
+    temp_password = f"Mentor{str(uuid.uuid4())[:8]}"
+    hashed_pw = pwd_context.hash(temp_password)
+    new_mentor = Mentor(
+        name=name,
+        email=email,
+        password=hashed_pw,
+        empId=emp_id,
+        specialization=specialization,
+        created_at=datetime.now().isoformat(),
+        last_login=datetime.now().isoformat()
+    )
+    await db.mentors.insert_one(new_mentor.dict())
+    # Send credentials via email
+    subject = "🎉 Welcome to Maverick Dashboard - Mentor Credentials"
+    body = f"""
+Hi {name},
+
+You have been added as a Mentor on Maverick Dashboard.
+
+Your Employee ID: {emp_id}
+Your Temporary Password: {temp_password}
+
+Login at: http://localhost:8080
+
+Best regards,\nMaverick Pathfinder Training Team
+"""
+    from email.message import EmailMessage
+    import aiosmtplib
+    msg = EmailMessage()
+    msg["From"] = settings.FROM_EMAIL
+    msg["To"] = email
+    msg["Subject"] = subject
+    msg.set_content(body)
+    try:
+        await aiosmtplib.send(
+            msg,
+            hostname=settings.SMTP_HOST,
+            port=settings.SMTP_PORT,
+            username=settings.SMTP_USER,
+            password=settings.SMTP_PASS,
+            start_tls=True,
+        )
+        email_result = {"success": True, "message": f"Email sent to {email}"}
+    except Exception as e:
+        email_result = {"success": False, "message": str(e)}
+    return {
+        "status": "success",
+        "empId": emp_id,
+        "password": temp_password,
+        "emailResult": email_result
+    }
 
 @app.get("/trainees/{emp_id}/tasks")
 async def get_trainee_tasks(emp_id: str):

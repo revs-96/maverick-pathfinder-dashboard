@@ -112,3 +112,13 @@ class Activity(BaseModel):
     details: Optional[str] = None
     timestamp: str  # ISO format
     meta: Optional[Dict[str, Any]] = None
+
+class Mentor(BaseModel):
+    id: Optional[int] = Field(None, description="Unique identifier")
+    name: str
+    email: EmailStr
+    password: str
+    empId: str = Field(..., description="Mentor Employee ID")
+    specialization: str = "General"
+    created_at: Optional[str] = None
+    last_login: Optional[str] = None

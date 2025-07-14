@@ -34,6 +34,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from "@
 import { useToast } from "@/components/ui/use-toast";
 import * as Popover from '@radix-ui/react-popover';
 import { motion, AnimatePresence } from 'framer-motion';
+import MentorOnboarding from "@/components/MentorOnboarding";
 
 // Local type for batch
 interface BatchForCount {
@@ -932,6 +933,7 @@ const AdminDashboard = () => {
           )}
           {activeTab === 'onboarding' && (
             <div className="mt-10">
+              <MentorOnboarding />
               <TraineeOnboarding />
               {/* Pending Resume Approvals section styled to match Batch Trainee Onboarding */}
               <div className="rounded-3xl bg-white/70 backdrop-blur-md shadow-2xl border border-white/30 p-8 mt-10">
